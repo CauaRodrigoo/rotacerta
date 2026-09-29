@@ -11,6 +11,7 @@ import "leaflet/dist/leaflet.css";
 import markerIcon from "leaflet/dist/images/marker-icon.png";
 import markerShadow from "leaflet/dist/images/marker-shadow.png";
 import "./App.css";
+import { contarAcidentes } from "./acidentes";
 
 const icone = L.icon({
   iconUrl: markerIcon,
@@ -28,6 +29,9 @@ type Rota = {
   asfaltoPct: number;
   terraPct: number;
   semDadoPct: number;
+  acidentes: number;
+  mortos: number;
+  pesoAcidentes: number;
 };
 
 const CORES = ["#1d4ed8", "#16a34a", "#ea580c"];
@@ -36,6 +40,10 @@ const CORES = ["#1d4ed8", "#16a34a", "#ea580c"];
 const SEM_DADO = [0];
 const ASFALTADO = [1, 3, 4, 5, 6, 7, 14];
 // Qualquer outro código (cascalho, terra, areia, grama...) conta como terra
+
+// Quanto cada "ponto de acidente por km" desconta da nota.
+// Se as notas ficarem muito baixas ou muito altas, ajuste este número.
+const DESCONTO_POR_PESO_KM = 15;
 
 type Feature = {
   geometry: { coordinates: [number, number][] };
@@ -61,13 +69,19 @@ function converter(f: Feature): Rota {
   // Se a API não trouxe informação nenhuma, tudo é "sem dado"
   if (resumo.length === 0) semDadoPct = 100;
 
+  const linha = f.geometry.coordinates.map((c) => [c[1], c[0]] as Ponto);
+  const ac = contarAcidentes(linha);
+
   return {
-    linha: f.geometry.coordinates.map((c) => [c[1], c[0]] as Ponto),
+    linha,
     km: f.properties.summary.distance / 1000,
     min: f.properties.summary.duration / 60,
     asfaltoPct,
     terraPct,
     semDadoPct,
+    acidentes: ac.quantidade,
+    mortos: ac.mortos,
+    pesoAcidentes: ac.peso,
   };
 }
 
@@ -151,6 +165,18 @@ export default function App() {
   const notaPavimento = (r: Rota) =>
     Math.round(r.asfaltoPct + r.semDadoPct * 0.5);
 
+  // Nota de acidentes: 100 = nenhum acidente perto da rota
+  const notaAcidentes = (r: Rota) => {
+    const pesoPorKm = r.km > 0 ? r.pesoAcidentes / r.km : 0;
+    return Math.round(
+      Math.max(0, Math.min(100, 100 - pesoPorKm * DESCONTO_POR_PESO_KM))
+    );
+  };
+
+  // Nota final de segurança: média das duas
+  const notaSeguranca = (r: Rota) =>
+    Math.round((notaPavimento(r) + notaAcidentes(r)) / 2);
+
   const maisRapida = rotas.length
     ? rotas.reduce((a, b) => (b.min < a.min ? b : a))
     : null;
@@ -158,9 +184,7 @@ export default function App() {
     ? rotas.reduce((a, b) => (b.km < a.km ? b : a))
     : null;
   const maisSegura = rotas.length
-    ? rotas.reduce((a, b) =>
-        notaPavimento(b) > notaPavimento(a) ? b : a
-      )
+    ? rotas.reduce((a, b) => (notaSeguranca(b) > notaSeguranca(a) ? b : a))
     : null;
 
   return (
@@ -234,14 +258,22 @@ export default function App() {
               {r.km.toFixed(1)} km · {Math.round(r.min)} min
             </p>
             <p>Custo: R$ {custoDe(r.km).toFixed(2)}</p>
-            <p>🛡️ Segurança: {notaPavimento(r)}/100</p>
+            <p>🛡️ Segurança: {notaSeguranca(r)}/100</p>
 
             {i === selecionada && (
-              <p style={{ fontSize: 13, color: "#475569" }}>
-                Asfalto {Math.round(r.asfaltoPct)}% · Terra{" "}
-                {Math.round(r.terraPct)}% · Sem dado{" "}
-                {Math.round(r.semDadoPct)}%
-              </p>
+              <div style={{ fontSize: 13, color: "#475569" }}>
+                <p>
+                  Pavimento {notaPavimento(r)}/100: asfalto{" "}
+                  {Math.round(r.asfaltoPct)}% · terra{" "}
+                  {Math.round(r.terraPct)}% · sem dado{" "}
+                  {Math.round(r.semDadoPct)}%
+                </p>
+                <p>
+                  Acidentes {notaAcidentes(r)}/100: {r.acidentes} perto da
+                  rota, {r.mortos} com morte
+                </p>
+                <p>Dados da PRF (só rodovias federais, 2024 a 2026).</p>
+              </div>
             )}
           </div>
         ))}
