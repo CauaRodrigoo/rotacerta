@@ -25,9 +25,91 @@ type Rota = {
   linha: Ponto[];
   km: number;
   min: number;
+  asfaltoPct: number;
+  terraPct: number;
+  semDadoPct: number;
 };
 
 const CORES = ["#1d4ed8", "#16a34a", "#ea580c"];
+
+// Códigos de "surface" do OpenRouteService
+const SEM_DADO = [0];
+const ASFALTADO = [1, 3, 4, 5, 6, 7, 14];
+// Qualquer outro código (cascalho, terra, areia, grama...) conta como terra
+
+type Feature = {
+  geometry: { coordinates: [number, number][] };
+  properties: {
+    summary: { distance: number; duration: number };
+    extras?: {
+      surface?: { summary: { value: number; amount: number }[] };
+    };
+  };
+};
+
+function converter(f: Feature): Rota {
+  let asfaltoPct = 0;
+  let terraPct = 0;
+  let semDadoPct = 0;
+
+  const resumo = f.properties.extras?.surface?.summary ?? [];
+  for (const s of resumo) {
+    if (SEM_DADO.includes(s.value)) semDadoPct += s.amount;
+    else if (ASFALTADO.includes(s.value)) asfaltoPct += s.amount;
+    else terraPct += s.amount;
+  }
+  // Se a API não trouxe informação nenhuma, tudo é "sem dado"
+  if (resumo.length === 0) semDadoPct = 100;
+
+  return {
+    linha: f.geometry.coordinates.map((c) => [c[1], c[0]] as Ponto),
+    km: f.properties.summary.distance / 1000,
+    min: f.properties.summary.duration / 60,
+    asfaltoPct,
+    terraPct,
+    semDadoPct,
+  };
+}
+
+async function buscarRotas(origem: Ponto, destino: Ponto): Promise<Rota[]> {
+  const chamar = async (comAlternativas: boolean) => {
+    const corpo: Record<string, unknown> = {
+      // O ORS espera longitude primeiro, depois latitude
+      coordinates: [
+        [origem[1], origem[0]],
+        [destino[1], destino[0]],
+      ],
+      extra_info: ["surface"],
+    };
+    if (comAlternativas) {
+      corpo.alternative_routes = {
+        target_count: 3,
+        share_factor: 0.6,
+        weight_factor: 1.4,
+      };
+    }
+    return fetch(
+      "https://api.openrouteservice.org/v2/directions/driving-car/geojson",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: import.meta.env.VITE_ORS_KEY,
+        },
+        body: JSON.stringify(corpo),
+      }
+    );
+  };
+
+  let resposta = await chamar(true);
+  // Rotas alternativas só funcionam até ~100 km no plano gratuito.
+  // Se falhar, tentamos de novo só com a rota principal.
+  if (!resposta.ok) resposta = await chamar(false);
+  if (!resposta.ok) throw new Error("Falha ao calcular rota");
+
+  const dados = await resposta.json();
+  return (dados.features as Feature[]).slice(0, 3).map(converter);
+}
 
 function CliqueNoMapa({ aoClicar }: { aoClicar: (p: Ponto) => void }) {
   useMapEvents({
@@ -53,29 +135,8 @@ export default function App() {
       return;
     }
 
-    const [origem, destino] = pontos;
-    // O OSRM espera longitude primeiro, depois latitude
-    const url =
-      `https://router.project-osrm.org/route/v1/driving/` +
-      `${origem[1]},${origem[0]};${destino[1]},${destino[0]}` +
-      `?overview=full&geometries=geojson&alternatives=true`;
-
-    fetch(url)
-      .then((r) => r.json())
-      .then((dados) => {
-        const lista: Rota[] = dados.routes.slice(0, 3).map(
-          (r: {
-            geometry: { coordinates: [number, number][] };
-            distance: number;
-            duration: number;
-          }) => ({
-            linha: r.geometry.coordinates.map(
-              (c) => [c[1], c[0]] as Ponto
-            ),
-            km: r.distance / 1000,
-            min: r.duration / 60,
-          })
-        );
+    buscarRotas(pontos[0], pontos[1])
+      .then((lista) => {
         setRotas(lista);
         setSelecionada(0);
       })
@@ -85,11 +146,21 @@ export default function App() {
   const custoDe = (km: number) =>
     kmPorLitro > 0 ? (km / kmPorLitro) * precoLitro : 0;
 
+  // Nota de pavimento: asfalto vale 100, terra vale 0 e
+  // trechos sem dado contam como meio-termo (50)
+  const notaPavimento = (r: Rota) =>
+    Math.round(r.asfaltoPct + r.semDadoPct * 0.5);
+
   const maisRapida = rotas.length
     ? rotas.reduce((a, b) => (b.min < a.min ? b : a))
     : null;
   const maisCurta = rotas.length
     ? rotas.reduce((a, b) => (b.km < a.km ? b : a))
+    : null;
+  const maisSegura = rotas.length
+    ? rotas.reduce((a, b) =>
+        notaPavimento(b) > notaPavimento(a) ? b : a
+      )
     : null;
 
   return (
@@ -158,10 +229,20 @@ export default function App() {
             <strong>Rota {i + 1}</strong>
             {r === maisRapida && " ⚡ mais rápida"}
             {r === maisCurta && " 📏 mais curta"}
+            {r === maisSegura && " 🛡️ mais segura"}
             <p>
               {r.km.toFixed(1)} km · {Math.round(r.min)} min
             </p>
             <p>Custo: R$ {custoDe(r.km).toFixed(2)}</p>
+            <p>🛡️ Segurança: {notaPavimento(r)}/100</p>
+
+            {i === selecionada && (
+              <p style={{ fontSize: 13, color: "#475569" }}>
+                Asfalto {Math.round(r.asfaltoPct)}% · Terra{" "}
+                {Math.round(r.terraPct)}% · Sem dado{" "}
+                {Math.round(r.semDadoPct)}%
+              </p>
+            )}
           </div>
         ))}
 
