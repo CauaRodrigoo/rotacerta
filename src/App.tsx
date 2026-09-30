@@ -1,9 +1,10 @@
-import { useState, useEffect } from "react";
+import { Fragment, useState, useEffect } from "react";
 import {
   MapContainer,
   TileLayer,
   Marker,
   Polyline,
+  useMap,
   useMapEvents,
 } from "react-leaflet";
 import L from "leaflet";
@@ -21,6 +22,8 @@ const icone = L.icon({
 });
 
 type Ponto = [number, number];
+
+type Criterio = "rapidez" | "economia" | "seguranca";
 
 type Rota = {
   linha: Ponto[];
@@ -134,28 +137,30 @@ function CliqueNoMapa({ aoClicar }: { aoClicar: (p: Ponto) => void }) {
   return null;
 }
 
+// Dá zoom para mostrar a rota inteira quando ela é selecionada
+function AjustarMapa({ linha }: { linha?: Ponto[] }) {
+  const mapa = useMap();
+
+  useEffect(() => {
+    if (!linha || linha.length === 0) return;
+    mapa.fitBounds(L.latLngBounds(linha), {
+      // Deixa espaço à direita para o painel não cobrir a rota
+      paddingTopLeft: [40, 40],
+      paddingBottomRight: [300, 40],
+    });
+  }, [linha, mapa]);
+
+  return null;
+}
+
 export default function App() {
   const [pontos, setPontos] = useState<Ponto[]>([]);
   const [rotas, setRotas] = useState<Rota[]>([]);
   const [selecionada, setSelecionada] = useState(0);
+  const [criterio, setCriterio] = useState<Criterio>("rapidez");
 
   const [kmPorLitro, setKmPorLitro] = useState(12);
   const [precoLitro, setPrecoLitro] = useState(6.0);
-
-  useEffect(() => {
-    if (pontos.length < 2) {
-      setRotas([]);
-      setSelecionada(0);
-      return;
-    }
-
-    buscarRotas(pontos[0], pontos[1])
-      .then((lista) => {
-        setRotas(lista);
-        setSelecionada(0);
-      })
-      .catch(() => alert("Não consegui calcular a rota"));
-  }, [pontos]);
 
   const custoDe = (km: number) =>
     kmPorLitro > 0 ? (km / kmPorLitro) * precoLitro : 0;
@@ -176,6 +181,47 @@ export default function App() {
   // Nota final de segurança: média das duas
   const notaSeguranca = (r: Rota) =>
     Math.round((notaPavimento(r) + notaAcidentes(r)) / 2);
+
+  // Devolve a lista de rotas na ordem do critério escolhido.
+  // Guardamos o índice original (i) para manter a cor de cada rota.
+  const ordenar = (c: Criterio) =>
+    rotas
+      .map((r, i) => ({ r, i }))
+      .sort((a, b) => {
+        if (c === "rapidez") return a.r.min - b.r.min;
+        if (c === "economia") return custoDe(a.r.km) - custoDe(b.r.km);
+        return notaSeguranca(b.r) - notaSeguranca(a.r);
+      });
+
+  const escolherCriterio = (c: Criterio) => {
+    setCriterio(c);
+    const melhor = ordenar(c)[0];
+    if (melhor) setSelecionada(melhor.i);
+  };
+
+  useEffect(() => {
+    if (pontos.length < 2) {
+      setRotas([]);
+      setSelecionada(0);
+      return;
+    }
+
+    buscarRotas(pontos[0], pontos[1])
+      .then((lista) => {
+        setRotas(lista);
+        setSelecionada(0);
+      })
+      .catch(() => alert("Não consegui calcular a rota"));
+  }, [pontos]);
+
+  const ordenadas = ordenar(criterio);
+
+  // Desenha a rota selecionada por último, para ficar por cima das outras
+  const paraDesenhar = rotas
+    .map((r, i) => ({ r, i }))
+    .sort(
+      (a, b) => Number(a.i === selecionada) - Number(b.i === selecionada)
+    );
 
   const maisRapida = rotas.length
     ? rotas.reduce((a, b) => (b.min < a.min ? b : a))
@@ -199,19 +245,41 @@ export default function App() {
             if (pontos.length < 2) setPontos([...pontos, p]);
           }}
         />
+        <AjustarMapa linha={rotas[selecionada]?.linha} />
+
         {pontos.map((p, i) => (
           <Marker key={i} position={p} icon={icone} />
         ))}
-        {rotas.map((r, i) => (
-          <Polyline
-            key={i}
-            positions={r.linha}
-            color={CORES[i]}
-            weight={i === selecionada ? 7 : 4}
-            opacity={i === selecionada ? 1 : 0.6}
-            eventHandlers={{ click: () => setSelecionada(i) }}
-          />
-        ))}
+
+        {paraDesenhar.map(({ r, i }) =>
+          i === selecionada ? (
+            <Fragment key={i}>
+              {/* Contorno branco por baixo, para a rota "saltar" do mapa */}
+              <Polyline
+                positions={r.linha}
+                color="white"
+                weight={14}
+                opacity={1}
+                interactive={false}
+              />
+              <Polyline
+                positions={r.linha}
+                color={CORES[i]}
+                weight={9}
+                opacity={1}
+              />
+            </Fragment>
+          ) : (
+            <Polyline
+              key={i}
+              positions={r.linha}
+              color={CORES[i]}
+              weight={5}
+              opacity={0.85}
+              eventHandlers={{ click: () => setSelecionada(i) }}
+            />
+          )
+        )}
       </MapContainer>
 
       <div className="painel">
@@ -243,7 +311,28 @@ export default function App() {
           />
         </label>
 
-        {rotas.map((r, i) => (
+        <div className="criterios">
+          <button
+            className={`criterio ${criterio === "rapidez" ? "ativo" : ""}`}
+            onClick={() => escolherCriterio("rapidez")}
+          >
+            ⚡ Rapidez
+          </button>
+          <button
+            className={`criterio ${criterio === "economia" ? "ativo" : ""}`}
+            onClick={() => escolherCriterio("economia")}
+          >
+            💰 Economia
+          </button>
+          <button
+            className={`criterio ${criterio === "seguranca" ? "ativo" : ""}`}
+            onClick={() => escolherCriterio("seguranca")}
+          >
+            🛡️ Segurança
+          </button>
+        </div>
+
+        {ordenadas.map(({ r, i }, posicao) => (
           <div
             key={i}
             className={`cartao ${i === selecionada ? "ativo" : ""}`}
@@ -251,10 +340,11 @@ export default function App() {
             onClick={() => setSelecionada(i)}
           >
             <strong>Rota {i + 1}</strong>
-            {r === maisRapida && " ⚡ mais rápida"}
-            {r === maisCurta && " 📏 mais curta"}
-            {r === maisSegura && " 🛡️ mais segura"}
+            {posicao === 0 && " ⭐ recomendada"}
             <p>
+              {r === maisRapida && "⚡ "}
+              {r === maisCurta && "📏 "}
+              {r === maisSegura && "🛡️ "}
               {r.km.toFixed(1)} km · {Math.round(r.min)} min
             </p>
             <p>Custo: R$ {custoDe(r.km).toFixed(2)}</p>

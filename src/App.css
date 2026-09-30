@@ -34,6 +34,32 @@
   width: 100%;
 }
 
+.criterios {
+  display: flex;
+  gap: 4px;
+  margin: 8px 0;
+}
+
+.criterio {
+  flex: 1;
+  padding: 6px 2px;
+  font-size: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: white;
+  cursor: pointer;
+}
+
+.criterio:hover {
+  background: #f8fafc;
+}
+
+.criterio.ativo {
+  background: #1d4ed8;
+  color: white;
+  border-color: #1d4ed8;
+}
+
 .cartao {
   border: 3px solid;
   border-radius: 6px;
@@ -49,6 +75,7 @@
 
 .cartao.ativo {
   background: #f1f5f9;
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.15);
 }
 
 .cartao p {
